@@ -18,12 +18,9 @@ class HTTPResponse:
 
 
 def process_url(url: str) -> tuple[str, int, str, str]:
-    """Returns (host, port, path, query).
-    port is -1 if the URL has none, path defaults to '/', query has no '?'.
-    Also accepts a bare request target like '/a/b?x=1' (host='', port=-1),
-    so the server can reuse it."""
+
     url = url.split("#", 1)[0]
-    host, port, rest = "", -1, url
+    host, port, rest = "", 8080, url
     if not url.startswith("/"):
         if url[:7].lower() != "http://":
             raise ValueError("URL must start with http://")
@@ -50,7 +47,7 @@ def process_url(url: str) -> tuple[str, int, str, str]:
 
 def _split_head(data: bytes):
     """bytes -> (first_line, headers{lowercase name: value}, rest_after_head)"""
-    idx = data.find(b"\r\n\r\n")
+    idx = data.find("\r\n\r\n")
     if idx == -1:
         raise ValueError("incomplete HTTP head")
     lines = data[:idx].split(b"\r\n")

@@ -70,7 +70,7 @@ class handler:
             }
             return res
 
-        if path.__contains__("../"):
+        if path.__contains__("../") or path.__contains__("/.."):
             res=custom_http.HTTPResponse()
             res.reason=b"Forbidden"
             res.status_code=403

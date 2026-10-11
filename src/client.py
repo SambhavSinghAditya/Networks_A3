@@ -18,7 +18,10 @@ if "__main__" == __name__:
     request.method="GET"
     request.url=url
     request.body=b""
-    host, port, _, _=custom_http.process_url(url)
+    try:
+        host, port, _, _=custom_http.process_url(url)
+    except ValueError as e:
+        pass
 
     request.headers={
         "Connection": "close", 

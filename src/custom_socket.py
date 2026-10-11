@@ -41,7 +41,7 @@ class CustomTCPSocket:
         # return the number of bytes sent, so that the HTTP layer can know how much data was sent
         pass
 
-    def recv(self, time: float) -> bytes:
+    def recv(self, time: float=-1) -> bytes:
         """
         Used by both Client and Server.
         1. Continuously reads raw_socket.recvfrom().
@@ -52,7 +52,7 @@ class CustomTCPSocket:
         6. Returns the in-order payload bytes to the HTTP layer.
         """
         # if nothign return ""
-        # if budget time is over, return ""
+        # if budget time is over, return "", if time=0, there is no time limit
         pass
 
     def close(self):
