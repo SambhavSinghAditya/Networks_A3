@@ -6,44 +6,32 @@ import ip_header
 import tcp
 
 MY_MSS = 1460
-DEFAULT_PEER_MSS = 536          # used when the peer sends no MSS option
-WINDOW = 65535                  # fixed advertised window (T11)
+DEFAULT_PEER_MSS = 536
+WINDOW = 65535
 TTL = 64
-HANDSHAKE_RETRY = 1.0           # resend SYN / SYN-ACK every 1 s (T7)
-HANDSHAKE_TIMEOUT = 8.0         # keep trying for more than 6 s (T7)
-CLOSE_TIMEOUT = 2.0             # give up on teardown after 2 s (T9)
-IDLE_TIMEOUT = 10.0             # give up if nothing is acknowledged for 10 s (T10)
+HANDSHAKE_RETRY = 1.0  # resend SYN / SYN-ACK every 1 s (T7)
+HANDSHAKE_TIMEOUT = 8.0 # keep trying for more than 6 s (T7)
+CLOSE_TIMEOUT = 2.0 # give up on teardown after 2 s (T9)
+IDLE_TIMEOUT = 10.0 # give  up if nothing is acknowledged for 10 s (T10)
 MIN_RTO = 0.2
-MAX_RTO = 1.0                   # retransmission timeout is at most 1 s (T10)
-INITIAL_CWND = 10               # in segments
+MAX_RTO = 1.0 # retransmision timeout is at most 1 s (T10)
+INITIAL_CWND = 10 # in segmens
 
 # the server creates one socket per connection, so all of them share one open log file
 log_files = {}
-
-
 def open_log(path):
     if path not in log_files:
         log_files[path] = open(path, "w")
     return log_files[path]
-
-
-# sequence numbers wrap around at 2^32, so compare them with modular arithmetic
 def seq_add(seq, n):
     return (seq + n) & 0xFFFFFFFF
-
-
 def seq_diff(a, b):
     # how far a is ahead of b
     return (a - b) & 0xFFFFFFFF
-
-
 def seq_lt(a, b):
     return 0 < seq_diff(b, a) < 2**31
-
-
 def seq_le(a, b):
     return seq_diff(b, a) < 2**31
-
 
 class CustomTCPSocket:
     def __init__(self, logfile=None):
@@ -60,12 +48,12 @@ class CustomTCPSocket:
         self.ip_id = random.randint(1, 65535)
 
         # sending side
-        self.iss = random.randint(0, 2**32 - 1)     # random initial sequence number (T6)
-        self.snd_una = self.iss                     # oldest unacknowledged byte
-        self.snd_nxt = self.iss                     # next byte to send
-        self.snd_max = self.iss                     # highest byte ever sent
+        self.iss = random.randint(0, 2**32 - 1) # random initial sequence number (T6)
+        self.snd_una = self.iss  # oldest unacknowledged byte
+        self.snd_nxt = self.iss # next byte to send
+        self.snd_max = self.iss #  highest byte ever sent
         self.send_data = b""
-        self.send_base = self.iss                   # sequence number of send_data[0]
+        self.send_base = self.iss # sequence number of send_data[0]
         self.peer_mss = None
         self.mss = DEFAULT_PEER_MSS
         self.peer_window = WINDOW
@@ -80,8 +68,8 @@ class CustomTCPSocket:
         # retransmission timer
         self.rto = MAX_RTO
         self.srtt = None
-        self.rttvar = 0
-        self.rtt_seq = None         # an RTT sample is taken when this byte is acked
+        self.rttvar = 0 
+        self.rtt_seq = None  # an RTT sample is taken when this byte is acked
         self.rtt_time = 0
         self.timer = None
         self.last_progress = 0
@@ -89,11 +77,9 @@ class CustomTCPSocket:
         # receiving side
         self.rcv_nxt = 0
         self.recv_buffer = bytearray()
-        self.out_of_order = {}      # seq -> payload
+        self.out_of_order = {}  # seq -> payload
         self.peer_fin_seq = None
         self.peer_fin = False
-
-    # ---------------- connection setup ----------------
 
     def connect(self, dest_ip, dest_port):
         self.remote_ip = dest_ip
@@ -142,7 +128,7 @@ class CustomTCPSocket:
 
         self.remote_ip = ip["source_ip"]
         self.remote_port = seg["source_port"]
-        self.local_ip = ip["dest_ip"]           # reply from the address the SYN was sent to
+        self.local_ip = ip["dest_ip"]  # reply from the address the SYN was sent to
         self._log("RECV", ip["source_ip"], ip["dest_ip"], ip["ttl"], ip["identification"], seg)
         self.rcv_nxt = seq_add(seg["seq"], 1)
         self.peer_mss = seg["mss"]
@@ -165,7 +151,7 @@ class CustomTCPSocket:
                 self.state = "CLOSED"
                 raise ConnectionError("connection reset during handshake")
             if flags & tcp.SYN:
-                last_sent = None            # client resent its SYN, so resend the SYN-ACK now
+                last_sent = None # client resent its SYN, so resend the SYN-ACK now
                 continue
             if flags & tcp.ACK and seg["ack"] == seq_add(self.iss, 1):
                 self._established(seg["window"])
@@ -175,7 +161,7 @@ class CustomTCPSocket:
 
     def _established(self, window):
         self.state = "ESTABLISHED"
-        self.mss = min(MY_MSS, self.peer_mss or DEFAULT_PEER_MSS)     # T3
+        self.mss = min(MY_MSS, self.peer_mss or DEFAULT_PEER_MSS)  # T3
         self.cwnd = INITIAL_CWND * self.mss
         self.peer_window = window
         self.snd_una = seq_add(self.iss, 1)
@@ -192,8 +178,6 @@ class CustomTCPSocket:
             return probe.getsockname()[0]
         finally:
             probe.close()
-
-    # ---------------- sending data ----------------
 
     def send(self, data):
         # blocks until all of data is acknowledged, then returns len(data)
@@ -302,7 +286,7 @@ class CustomTCPSocket:
                     self._send_data_at(ack, self.mss)
                     self.cwnd = max(self.cwnd - acked + self.mss, self.mss)
             elif self.cwnd < self.ssthresh:
-                self.cwnd += min(acked, self.mss)                       # slow start
+                self.cwnd += min(acked, self.mss) # slow start
             else:
                 self.cwnd += max(1, self.mss * self.mss // self.cwnd)   # congestion avoidance
 
@@ -341,8 +325,6 @@ class CustomTCPSocket:
             self.rttvar = 0.75 * self.rttvar + 0.25 * abs(self.srtt - sample)
             self.srtt = 0.875 * self.srtt + 0.125 * sample
         self.rto = min(MAX_RTO, max(MIN_RTO, self.srtt + 4 * self.rttvar))
-
-    # ---------------- receiving data ----------------
 
     def recv(self, timeout=-1):
         # returns in-order bytes; b"" once the peer has closed (FIN)
@@ -390,7 +372,7 @@ class CustomTCPSocket:
             self._deliver_out_of_order()
 
         if self.peer_fin_seq is not None and not self.peer_fin and self.rcv_nxt == self.peer_fin_seq:
-            self.rcv_nxt = seq_add(self.rcv_nxt, 1)     # FIN takes one sequence number
+            self.rcv_nxt = seq_add(self.rcv_nxt, 1) # FIN takes one sequence number
             self.peer_fin = True
 
         # cumulative ACK for every data segment, even duplicates and out-of-order ones (T11)
@@ -409,8 +391,6 @@ class CustomTCPSocket:
                         self.rcv_nxt = seq_add(self.rcv_nxt, len(payload) - skip)
                         progress = True
 
-    # ---------------- teardown ----------------
-
     def close(self):
         if self.state != "ESTABLISHED":
             self.state = "CLOSED"
@@ -419,7 +399,7 @@ class CustomTCPSocket:
 
         self.state = "CLOSING"
         fin_seq = self.snd_nxt
-        self.snd_nxt = seq_add(fin_seq, 1)      # FIN takes one sequence number
+        self.snd_nxt = seq_add(fin_seq, 1)  # FIN takes one sequence number
         self.snd_max = self.snd_nxt
         start = time.time()
         last_sent = None
@@ -447,8 +427,6 @@ class CustomTCPSocket:
         finally:
             self.state = "CLOSED"
             self.raw_socket.close()
-
-    # ---------------- packets ----------------
 
     def _handle_segment(self, seg):
         flags = seg["flags"]
