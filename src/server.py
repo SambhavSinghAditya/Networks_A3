@@ -122,10 +122,10 @@ if __name__ == "__main__":
     parser.add_argument("-p", "--port",
                         type=int, default=8080)
     parser.add_argument("-d", "--document_root", type=str, default="./www")
-    parser.add_argument("-l", "--logfile", type=str, default=None)
+    parser.add_argument("-l", "--log", type=str, default=None)
     args=parser.parse_args()
     docroot=args.document_root
-    logfile=args.logfile
+    logfile=args.log
     port=args.port
     server=custom_http.CustomHTTP.Server(handler(docroot, logfile), port, logfile)
     server.serve_forever()

@@ -19,8 +19,7 @@ ip route add 10.10.1.0/24 via 10.10.2.1 dev "$IF_B"
 # A4: router
 sysctl -w net.ipv4.ip_forward=1
 
-# A7: client->server packets (src 10.10.1.10) arrive on IF_B, but our route back to
-# 10.10.1.10 is via IF_D -> strict RPF would drop them, so loose on IF_B only.
+# A7: client->server packets (src 10.10.1.10) arrive on IF_B, but our route back to them is via IF_D.
 sysctl -w net.ipv4.conf."$IF_B".rp_filter=2
 sysctl -w net.ipv4.conf."$IF_C".rp_filter=1
 sysctl -w net.ipv4.conf."$IF_D".rp_filter=1
