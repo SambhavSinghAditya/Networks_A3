@@ -1,5 +1,6 @@
 
 from dataclasses import dataclass
+import socket
 import time
 import custom_socket
 @dataclass
@@ -20,7 +21,7 @@ class HTTPResponse:
 def process_url(url: str) -> tuple[str, int, str, str]:
 
     url = url.split("#", 1)[0]
-    host, port, rest = "", 8080, url
+    host, port, rest = "", -1, url
     if not url.startswith("/"):
         if url[:7].lower() != "http://":
             raise ValueError("URL must start with http://")
@@ -47,7 +48,7 @@ def process_url(url: str) -> tuple[str, int, str, str]:
 
 def _split_head(data: bytes):
     """bytes -> (first_line, headers{lowercase name: value}, rest_after_head)"""
-    idx = data.find("\r\n\r\n")
+    idx = data.find(b"\r\n\r\n")
     if idx == -1:
         raise ValueError("incomplete HTTP head")
     lines = data[:idx].split(b"\r\n")
@@ -79,31 +80,50 @@ def _decode_chunked(data: bytes) -> bytes:
 
 class CustomHTTP: 
     class ClientConnection: 
-        def __init__(self):
-            self.socket=custom_socket.CustomTCPSocket()
-            pass
+        def __init__(self, logfile=None):
+            self.socket=custom_socket.CustomTCPSocket(logfile)
+
+        @staticmethod
+        def _complete(data: bytes) -> bool:
+            """True once Content-Length / chunked framing says the response is whole."""
+            try:
+                _, headers, body = _split_head(data)
+                status = int(data.split(b" ", 2)[1])
+            except (ValueError, IndexError):
+                return False
+            if status in (204, 304) or 100 <= status < 200:
+                return True
+            if "chunked" in headers.get("transfer-encoding", "").lower():
+                try:
+                    _decode_chunked(body)
+                    return True
+                except ValueError:
+                    return False
+            if "content-length" in headers:
+                try:
+                    return len(body) >= int(headers["content-length"])
+                except ValueError:
+                    return False
+            return False        # read-until-close
 
         def send_request(self, request: HTTPRequest)-> HTTPResponse: 
             reciever_ip, reciever_port, _, _ = process_url(request.url)
-            self.socket.connect(reciever_ip, reciever_port)
-            req=self.convert_request_to_bytes(request)
-            while True: 
-                sent_bytes=self.socket.send(req)
-                req=req[sent_bytes:]
-                if len(req)==0:
-                    break
-            # request sent, now the response
-            res=""
-            while True: 
-                response=self.socket.recv().decode('utf-8')
-                if response=='':
-                    break
-                res+=response
-            
-            res=self.parse_response(res)
-            if(len(res.content)!=int(res.headers.get("Content-Length", 0))):
-                raise Exception("Content-Length mismatch")
-            return res
+            reciever_ip = socket.gethostbyname(reciever_ip)     # name -> IP (raises on failure)
+            try:
+                self.socket.connect(reciever_ip, reciever_port if reciever_port != -1 else 80)
+                req=self.convert_request_to_bytes(request)
+                while req:
+                    req=req[self.socket.send(req):]
+                # request sent, now the response
+                res=b""
+                while not self._complete(res):
+                    chunk=self.socket.recv(10)      # TimeoutError / ConnectionError -> exit 2
+                    if chunk==b"":                  # peer FIN
+                        break
+                    res+=chunk
+                return self.parse_response(res)
+            finally:
+                self.socket.close()
 
         def convert_request_to_bytes(self, request: HTTPRequest) -> bytes:
             _, _, path, query = process_url(request.url)
@@ -136,7 +156,7 @@ class CustomHTTP:
         
 
     class Server: 
-        def __init__(self, handler, port):
+        def __init__(self, handler, port, logfile=None):
             # I am expecting handler to have
             # method execute_get(request: HTTPRequest, time_budget: float)
             # and returns HTTPResponse
@@ -144,40 +164,39 @@ class CustomHTTP:
 
             self.handler=handler
             self.port=port
-            self.socket=custom_socket.CustomTCPSocket()
+            self.logfile=logfile
 
         def serve_forever(self):
             while True:
-                ip, port=self.socket.accept(self.port)
-                #get the complete request from client
-                start=time.time()
-                req=""
-                while True: 
-                    request=self.socket.recv().decode('utf-8')
-                    if request=='':
-                        continue
-                    if time.time()-start>10:
-                        break
-                    req+=request
-                    if '\r\n\r\n' in req:
-                        break
-                if time.time()-start>10:
-                    self.socket.close()
-                    continue
-                parsed = self.parse_request(req)
-                if isinstance(parsed, HTTPResponse):        # malformed -> 400, handler never runs
-                    response = parsed
-                else:
-                    response = self.handler.execute_get(parsed, 10 - (time.time() - start))
-                res=self.convert_response_to_bytes(response)
-                while True: 
-                    sent_bytes=self.socket.send(res, 10-(time.time()-start))
-                    res=res[sent_bytes:]
-                    if len(res)==0:
-                        break
-                    if time.time()-start>10:
-                        break
-                self.socket.close()
+                sock=custom_socket.CustomTCPSocket(self.logfile)   # fresh state per connection
+                try:
+                    sock.accept(self.port)
+                    # 10s covers reading the request head only
+                    start=time.time()
+                    req=b""
+                    while b"\r\n\r\n" not in req and len(req)<65536:
+                        left=10-(time.time()-start)
+                        if left<=0:
+                            raise TimeoutError("request head timeout")
+                        chunk=sock.recv(left)
+                        if chunk==b"":              # client closed early: no response
+                            raise ConnectionError("closed before request head")
+                        req+=chunk
+                    parsed = self.parse_request(req)
+                    if isinstance(parsed, HTTPResponse):        # malformed -> 400, handler never runs
+                        response = parsed
+                    else:
+                        response = self.handler.execute_get(parsed, 10 - (time.time() - start))
+                    res=self.convert_response_to_bytes(response)
+                    while res:
+                        res=res[sock.send(res):]
+                except Exception:
+                    pass                            # never die on a bad client
+                finally:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
 
         def parse_request(self, request: bytes) -> HTTPRequest | HTTPResponse:
             try:

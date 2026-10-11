@@ -1,7 +1,9 @@
 import socket
+import random
 
 class CustomTCPSocket:
-    def __init__(self):
+    def __init__(self, logfile=None):
+        self.logfile = logfile  # --log FILE (one line per segment)
         self.raw_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
         self.raw_socket.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
         
@@ -30,6 +32,12 @@ class CustomTCPSocket:
         """
         pass
 
+    def _generate_initial_seq_num(self):
+        return random.randint(0, 2**32 - 1)
+
+    def _get_random_port(self):
+        return random.randint(61000, 65535)
+
     def send(self, application_data: bytes):
         """
         Used by both Client and Server.
@@ -51,8 +59,9 @@ class CustomTCPSocket:
         5. Buffers out-of-order packets and sends cumulative ACKs.
         6. Returns the in-order payload bytes to the HTTP layer.
         """
-        # if nothign return ""
-        # if budget time is over, return "", if time=0, there is no time limit
+        # time = max seconds to wait for data (0 = no limit)
+        # returns b"" only when the peer closed (FIN)
+        # raises TimeoutError if nothing arrived in time, ConnectionError on RST
         pass
 
     def close(self):

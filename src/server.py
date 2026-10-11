@@ -18,20 +18,10 @@ class handler:
         host, port, path, q=custom_http.process_url(request.url)
         file_path = self.document_root + path
 
-        if os.path.isdir(file_path):
+        if path.endswith("/") or os.path.isdir(file_path):
             file_path = os.path.join(file_path, "index.html")
 
-        idx=len(file_path)-1
-        extension=""
-        while idx>0 and (file_path[idx]!='/' and file_path[idx]!='.'):
-            extension=file_path[idx]+extension
-            idx-=1
-            if(file_path[idx]=='.'):
-                extension=file_path[idx]+extension
-                break
-            elif (file_path[idx]=='/'):
-                extension=""
-                break
+        extension=os.path.splitext(file_path)[1]
         # figure out content type 
         content_type= ""
         match extension.lower():
@@ -70,7 +60,7 @@ class handler:
             }
             return res
 
-        if path.__contains__("../") or path.__contains__("/.."):
+        if ".." in path.split("/"):
             res=custom_http.HTTPResponse()
             res.reason=b"Forbidden"
             res.status_code=403
@@ -80,6 +70,7 @@ class handler:
                 "Content-Length": str(len(res.content)),
                 "Connection": "close" 
             }
+            res.content=res.content if request.method=="GET" else b""
             return res
 
         if not os.path.isfile(file_path):
@@ -92,12 +83,26 @@ class handler:
                 "Content-Length": str(len(res.content)),
                 "Connection": "close"
             }
+            res.content=res.content if request.method=="GET" else b""
             return res
-            
+
 
         # now read the file and create the content for the response
-        with open(file_path, "rb") as f:
-            content=f.read()
+        try:
+            with open(file_path, "rb") as f:
+                content=f.read()
+        except OSError:
+            res=custom_http.HTTPResponse()
+            res.reason=b"Forbidden"
+            res.status_code=403
+            res.content=b"<p>403 Forbidden</p>"
+            res.headers={
+                "Content-Type": "text/html",
+                "Content-Length": str(len(res.content)),
+                "Connection": "close"
+            }
+            res.content=res.content if request.method=="GET" else b""
+            return res
 
         res=custom_http.HTTPResponse()
         res.status_code=200
@@ -117,10 +122,10 @@ if __name__ == "__main__":
     parser.add_argument("-p", "--port",
                         type=int, default=8080)
     parser.add_argument("-d", "--document_root", type=str, default="./www")
-    parser.add_argument("-l", "--logfile", type=str, default="./server.log")
+    parser.add_argument("-l", "--logfile", type=str, default=None)
     args=parser.parse_args()
     docroot=args.document_root
     logfile=args.logfile
     port=args.port
-    server=custom_http.CustomHTTP.Server(handler(docroot, logfile), port)
+    server=custom_http.CustomHTTP.Server(handler(docroot, logfile), port, logfile)
     server.serve_forever()
