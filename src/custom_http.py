@@ -230,6 +230,3 @@ class CustomHTTP:
             for k, v in headers.items():
                 head += f"{k}: {v}\r\n".encode("latin-1")
             return head + b"\r\n" + response.content
-
-
-

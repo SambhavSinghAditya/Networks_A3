@@ -1,2 +1,6 @@
 #!/bin/sh
+# drop the kernel's own RSTs: our TCP runs on a raw socket, so the kernel
+# knows nothing about our connection and would reset it (-C checks, so no duplicate rule)
+iptables -C OUTPUT -p tcp --tcp-flags RST RST -j DROP 2>/dev/null || \
+    iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
 exec python3 "$(dirname "$0")/../src/server.py" "$@"
