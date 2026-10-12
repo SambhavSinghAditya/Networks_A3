@@ -67,6 +67,8 @@ def _decode_chunked(data: bytes) -> bytes:
         if eol == -1:
             raise ValueError("incomplete chunk header")
         size = int(data[pos:eol].split(b";", 1)[0].strip(), 16)  # ignore chunk extensions
+        if size < 0:
+            raise ValueError("bad chunk size")
         pos = eol + 2
         if size == 0:
             if b"\r\n\r\n" not in data[pos - 2:]:   # trailers ignored, but must be terminated
@@ -94,8 +96,8 @@ class CustomHTTP:
                     return False
                 try:
                     head = bytes(data[:idx + 4])
-                    headers = _split_head(head)[1]
-                    status = int(head.split(b" ", 2)[1])
+                    line, headers, _ = _split_head(head)
+                    status = int(line.split(b" ", 2)[1])
                 except (ValueError, IndexError):
                     return False
                 st["end"] = st["pos"] = idx + 4
@@ -121,6 +123,8 @@ class CustomHTTP:
                     return False
                 try:
                     size = int(data[pos:eol].split(b";", 1)[0].strip(), 16)
+                    if size < 0:
+                        raise ValueError
                 except ValueError:
                     return False
                 if size == 0:                       # trailers ignored, but must be terminated
@@ -140,7 +144,7 @@ class CustomHTTP:
                 # request sent, now the response
                 res, st = bytearray(), {}
                 while not self._complete(res, st):
-                    chunk=self.socket.recv(4096)      # TimeoutError / ConnectionError -> exit 2
+                    chunk=self.socket.recv(10)        # TimeoutError / ConnectionError -> exit 2
                     if chunk==b"":                  # peer FIN
                         break
                     res+=chunk
