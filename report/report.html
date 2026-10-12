@@ -1,0 +1,799 @@
+<!doctype html><html><head><meta charset='utf-8'><title>Assignment 3 Report</title><style>
+@page { size: A4; margin: 16mm 14mm; }
+body { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 10.5pt; line-height: 1.45; color: #111; }
+h1 { font-size: 20pt; border-bottom: 2px solid #333; padding-bottom: 4px; }
+h2 { font-size: 15pt; margin-top: 22px; border-bottom: 1px solid #bbb; padding-bottom: 2px; page-break-after: avoid; }
+h3 { font-size: 12pt; margin-top: 16px; page-break-after: avoid; }
+table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 9.5pt; }
+tr { page-break-inside: avoid; }
+th, td { border: 1px solid #bbb; padding: 4px 6px; text-align: left; vertical-align: top; }
+th { background: #eee; }
+code { font-family: Menlo, monospace; font-size: 9pt; background: #f2f2f2; padding: 0 2px; }
+pre { background: #f5f5f5; padding: 8px; font-size: 9pt; page-break-inside: avoid; }
+pre code { background: none; }
+img { display: block; max-width: 100%; max-height: 120mm; margin: 8px auto 2px; border: 1px solid #ccc; page-break-inside: avoid; }
+p:has(img) { page-break-inside: avoid; }
+blockquote { border-left: 3px solid #999; margin-left: 0; padding-left: 10px; color: #333; }
+</style></head><body><h1>Assignment 3 Report: Parts A to D</h1>
+<p>This report covers the network setup (Part A), our TCP over raw sockets (Part B), the HTTP client (Part C) and the HTTP server (Part D). Every screenshot was taken on our four Ubuntu 22.04 VMs (UTM on an Apple Silicon Mac) and shows the command that produced it.</p>
+<h2>Overview</h2>
+<p>The four parts build one small system from the bottom up: a network, a TCP stack, and a web client and server on top.</p>
+<ul>
+<li><strong>Part A (network):</strong> four VMs with hand-set addresses and routes, so requests and replies take different paths.</li>
+<li><strong>Part B (TCP):</strong> our own IPv4 and TCP on raw sockets, with retransmission, reordering and congestion control.</li>
+<li><strong>Part C (client):</strong> <code>client.py</code> sends one HTTP GET request, reads the reply, and saves the body.</li>
+<li><strong>Part D (server):</strong> <code>server.py</code> serves files from a folder to tools like curl and wget.</li>
+<li>Both use <code>custom_http.py</code> for HTTP work (building and reading requests and replies).</li>
+<li>Both use <code>custom_socket.py</code> for TCP (our Part B code), so no kernel TCP and no HTTP libraries are used.</li>
+<li>Client and server always run on different machines.</li>
+</ul>
+<h2>Part A: the network</h2>
+<p>Four VMs form a chain (client, r1, r2, server) plus a second direct link between the client and r2, so requests and replies take different paths.</p>
+<h3>Addresses and roles</h3>
+<table>
+<thead>
+<tr>
+<th>Machine</th>
+<th>Role</th>
+<th>Interfaces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>client</td>
+<td>host</td>
+<td>LAN A <code>10.10.1.10/24</code> (enp0s8), Link D <code>10.10.4.2/30</code> (enp0s9)</td>
+</tr>
+<tr>
+<td>r1</td>
+<td>router</td>
+<td>LAN A <code>10.10.1.1/24</code> (enp0s8), LAN B <code>10.10.2.1/24</code> (enp0s9)</td>
+</tr>
+<tr>
+<td>r2</td>
+<td>router</td>
+<td>LAN B <code>10.10.2.2/24</code> (enp0s8), LAN C <code>10.10.3.1/24</code> (enp0s9), Link D <code>10.10.4.1/30</code> (enp0s10)</td>
+</tr>
+<tr>
+<td>server</td>
+<td>host</td>
+<td>LAN C <code>10.10.3.10/24</code> (enp0s8)</td>
+</tr>
+</tbody>
+</table>
+<h3>R1: network adapters</h3>
+<p>Each VM is attached only to its own internal networks (no NAT adapter). Before running our scripts, every interface is down and has no address.</p>
+<p><img alt="UTM settings of the four VMs" src="img/a_utm_settings.png" /></p>
+<p><em>What it shows:</em> UTM's settings window for client, r1, r2 and server. The <strong>Devices</strong> list of every VM has no <strong>Network</strong> device, so UTM gives none of them a NAT, shared or bridged network. The VMs have no Internet and no link to the host computer. The only network cards are the internal links (LANs A, B, C and Link D), which we add through the QEMU <strong>Arguments</strong> page.</p>
+<p><img alt="client interfaces" src="img/a_link_client.png" />
+<img alt="r1 interfaces" src="img/a_link_r1.png" />
+<img alt="r2 interfaces" src="img/a_link_r2.png" />
+<img alt="server interfaces" src="img/a_link_server.png" /></p>
+<p><em>What it shows:</em> <code>ip -br link</code> on each VM before setup. The client and server have the right number of interfaces (2 and 1), r1 has 2 and r2 has 3, and all are DOWN. The middle part of each MAC address shows which network the card is on: <code>0a</code> = LAN A, <code>0b</code> = LAN B, <code>0c</code> = LAN C, <code>0d</code> = Link D. For example, the client's cards end in <code>0a:00:01</code> and <code>0d:00:01</code>, so it sits on LAN A and Link D.</p>
+<h3>Routes each script sets up</h3>
+<p>Adding an address with <code>ip addr add</code> creates the route for that network automatically. Only the routes below are added by hand.</p>
+<table>
+<thead>
+<tr>
+<th>Machine</th>
+<th>Route added</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>client</td>
+<td><code>10.10.2.0/24</code> via <code>10.10.1.1</code> (r1)</td>
+<td>Requests to LAN B go through r1</td>
+</tr>
+<tr>
+<td>client</td>
+<td><code>10.10.3.0/24</code> via <code>10.10.1.1</code> (r1)</td>
+<td>Requests to the server go client, r1, r2, server (A2)</td>
+</tr>
+<tr>
+<td>r1</td>
+<td>default via <code>10.10.2.2</code> (r2)</td>
+<td>One route covers every network r1 is not attached to (LAN C and Link D) (A5)</td>
+</tr>
+<tr>
+<td>r2</td>
+<td><code>10.10.1.0/24</code> via <code>10.10.2.1</code> (r1)</td>
+<td>Lets r2 reach LAN A, including r1's own address</td>
+</tr>
+<tr>
+<td>r2</td>
+<td><code>10.10.1.10/32</code> via <code>10.10.4.2</code> (client)</td>
+<td>Sends replies for the client over Link D (A3)</td>
+</tr>
+<tr>
+<td>server</td>
+<td>default via <code>10.10.3.1</code> (r2)</td>
+<td>Every reply leaves through r2</td>
+</tr>
+</tbody>
+</table>
+<h3>R1: addresses and routes after running the scripts</h3>
+<p>Each screenshot shows the same steps: <code>rp_filter</code> is 1 everywhere before we start (A7), then our script runs, then <code>ip -br addr</code> and <code>ip route</code>.</p>
+<p><img alt="client config" src="img/a_cfg_client.png" /></p>
+<p><em>What it shows:</em> the client gets <code>10.10.1.10/24</code> and <code>10.10.4.2/30</code>. LAN B and LAN C are reached through r1 (<code>10.10.1.1</code>). There is no default route.</p>
+<p><img alt="r1 config" src="img/a_cfg_r1.png" /></p>
+<p><em>What it shows:</em> r1 has its two addresses and one extra route only: <code>default via 10.10.2.2</code> (A5). Forwarding is on.</p>
+<p><img alt="r2 config" src="img/a_cfg_r2.png" />
+<img alt="r2 routes" src="img/a_cfg_r2_route.png" /></p>
+<p><em>What it shows:</em> r2 has its three addresses. It has the <code>/24</code> route to LAN A through r1 and the <code>/32</code> route to the client over Link D. There is no default route (A6).</p>
+<p><img alt="server config" src="img/a_cfg_server.png" /></p>
+<p><em>What it shows:</em> the server gets <code>10.10.3.10/24</code> and one route, <code>default via 10.10.3.1</code> (r2). Forwarding is off.</p>
+<h3>Why replies take Link D</h3>
+<ul>
+<li>r2 has two routes that match the client's address <code>10.10.1.10</code>: the <code>/24</code> through r1 and the <code>/32</code> over Link D.</li>
+<li>Linux always picks the most specific route (longest prefix), so the <code>/32</code> wins and the reply goes over Link D.</li>
+<li>Traffic for other LAN A addresses, such as r1's <code>10.10.1.1</code>, still goes through r1.</li>
+<li>r1 has no route except its default, and r2 has no default route at all: everything r2 needs is either directly connected or listed above.</li>
+</ul>
+<h3>A1 and A4: reachability and forwarding</h3>
+<p><img alt="client ping" src="img/a_ping_trace_client.png" />
+<img alt="r1 ping" src="img/a_ping_r1.png" />
+<img alt="r2 ping" src="img/a_ping_r2.png" />
+<img alt="server ping" src="img/a_ping_trace_server.png" /></p>
+<p><em>What it shows:</em> every machine pings all six addresses on LANs A, B and C, and all of them answer (A1). <code>ip_forward</code> is 1 on r1 and r2 and 0 on the client and server (A4).</p>
+<p><img alt="client to r2 over Link D" src="img/a_linkd_client.png" />
+<img alt="r2 to client over Link D" src="img/a_linkd_r2.png" /></p>
+<p><em>What it shows:</em> the client and r2 can reach each other over Link D (<code>10.10.4.1</code> and <code>10.10.4.2</code>). TTL 64 means no router in between.</p>
+<h3>R2: traceroute</h3>
+<p>The two traceroutes are at the bottom of the client and server screenshots above.</p>
+<table>
+<thead>
+<tr>
+<th>Direction</th>
+<th>Hops</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>client to server (<code>traceroute -n 10.10.3.10</code>)</td>
+<td>1: <code>10.10.1.1</code> (r1), 2: <code>10.10.4.1</code> (r2), 3: <code>10.10.3.10</code> (server)</td>
+</tr>
+<tr>
+<td>server to client (<code>traceroute -n 10.10.1.10</code>)</td>
+<td>1: <code>10.10.3.1</code> (r2), 2: <code>10.10.1.10</code> (client)</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>client to server:</strong> the client's route to LAN C points to r1, so r1 is the first hop. r1's default route sends it to r2, and r2 is directly attached to LAN C.</li>
+<li><strong>server to client:</strong> the server's default route points to r2. r2's <code>/32</code> route sends it straight to the client over Link D, so r1 never appears.</li>
+<li><strong>Why r2 shows <code>10.10.4.1</code> and not <code>10.10.2.2</code>:</strong> when r2 says "time exceeded" to the client, it sends that ICMP reply from the address of the interface the reply leaves through. A reply to the client leaves over Link D, so its source is <code>10.10.4.1</code>.</li>
+<li><strong>Why the directions differ:</strong> requests go through r1 (rule A2) and replies go over Link D (rule A3).</li>
+</ul>
+<h3>R3: forwarding and reverse-path filtering</h3>
+<ul>
+<li><strong>Forwarding:</strong> <code>net.ipv4.ip_forward</code> is 1 on r1 and r2 and 0 on the client and server, so only the routers pass packets on.</li>
+<li><strong>Why rp_filter changes:</strong> requests and replies use different paths, so some packets arrive on an interface that is not the best route back to their source. Strict filtering (1) drops those.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Machine</th>
+<th>Interface</th>
+<th>Setting</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>client</td>
+<td>Link D (enp0s9)</td>
+<td>loose (2)</td>
+<td>Replies from the server arrive over Link D, but the client's route to the server is through r1</td>
+</tr>
+<tr>
+<td>r2</td>
+<td>LAN B (enp0s8)</td>
+<td>loose (2)</td>
+<td>Client packets arrive from r1, but r2's route back to the client is over Link D</td>
+</tr>
+<tr>
+<td>client, r2</td>
+<td>all other interfaces</td>
+<td>strict (1)</td>
+<td>Their paths are symmetric, so strict is safe</td>
+</tr>
+<tr>
+<td>r1, server</td>
+<td>all interfaces</td>
+<td>strict (1)</td>
+<td>Required by the assignment (A7); their paths are symmetric</td>
+</tr>
+</tbody>
+</table>
+<p>The kernel uses the higher of the <code>all</code> and per-interface values, so setting 2 on one interface works while <code>all</code> stays 1.</p>
+<p><img alt="client rp_filter" src="img/a_rpf_client.png" />
+<img alt="r1 rp_filter" src="img/a_rpf_r1.png" />
+<img alt="r2 rp_filter" src="img/a_rpf_r2.png" />
+<img alt="server rp_filter" src="img/a_rpf_server.png" /></p>
+<p><em>What it shows:</em> the final values. Only client enp0s9 (Link D) and r2 enp0s8 (LAN B) are 2. Everything else, including all of r1 and the server, is 1.</p>
+<p><strong>Proof that loose mode is needed:</strong></p>
+<p><img alt="client strict test" src="img/a_rpf_test_client.png" /></p>
+<p><em>What it shows:</em> we set client Link D back to strict (1). The ping to the server fails (100% loss), because the reply comes in on Link D. With 2, the ping works again.</p>
+<p><img alt="r2 strict test" src="img/a_rpf_test_r2.png" /></p>
+<p><em>What it shows:</em> we set r2 LAN B to strict (1). The client's ping to the server fails, because r2 drops the request coming from r1. With 2, the ping works again.</p>
+<h2>Part B: TCP over raw sockets</h2>
+<p>We build every IPv4 and TCP header ourselves and keep all connection logic in one class.</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it holds</th>
+<th>What it does not know</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ip_header.py</code></td>
+<td>Internet checksum; builds and checks IPv4 headers (DF flag, ID from 1 to 65535, TTL 64; rejects bad version, lengths, checksum and fragments)</td>
+<td>Anything about TCP or connections</td>
+</tr>
+<tr>
+<td><code>tcp.py</code></td>
+<td>Flag constants; builds and checks TCP headers (checksum with pseudo-header; only the MSS option is sent or read)</td>
+<td>Anything about connections</td>
+</tr>
+<tr>
+<td><code>custom_socket.py</code></td>
+<td><code>CustomTCPSocket</code>: handshake, send, receive, teardown, timers, congestion control, packet log</td>
+<td>Header layout: it works with already parsed fields</td>
+</tr>
+</tbody>
+</table>
+<h3>Key variables</h3>
+<p>A sequence number counts bytes, so these variables mark positions in the byte stream.</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>snd_una</code></td>
+<td>Oldest byte sent but not yet acknowledged</td>
+</tr>
+<tr>
+<td><code>snd_nxt</code></td>
+<td>Next byte to send</td>
+</tr>
+<tr>
+<td><code>snd_max</code></td>
+<td>Highest byte ever sent (stays ahead of <code>snd_nxt</code> after a resend)</td>
+</tr>
+<tr>
+<td><code>rcv_nxt</code></td>
+<td>Next byte we expect from the peer, and the ACK number we send</td>
+</tr>
+<tr>
+<td><code>cwnd</code>, <code>ssthresh</code></td>
+<td>Congestion window and slow-start threshold, in bytes</td>
+</tr>
+<tr>
+<td><code>rto</code>, <code>srtt</code>, <code>rttvar</code></td>
+<td>Retransmission timeout and the round-trip estimates behind it</td>
+</tr>
+<tr>
+<td><code>out_of_order</code></td>
+<td>Segments that arrived early, stored by sequence number</td>
+</tr>
+</tbody>
+</table>
+<p>Sequence numbers are 32-bit and wrap around, so every comparison uses the helpers <code>seq_add</code>, <code>seq_diff</code>, <code>seq_lt</code> and <code>seq_le</code>.</p>
+<h3>Connection setup</h3>
+<ol>
+<li><strong>Client (<code>connect</code>):</strong> pick a random source port (61000 to 65535) and find the local address with a UDP socket that sends nothing. Send a SYN with a random initial sequence number and MSS 1460.</li>
+<li><strong>Retries:</strong> the SYN is resent every 1 second and the attempt ends after 8 seconds. A RST that acknowledges the SYN means the connection was refused.</li>
+<li><strong>Server (<code>accept</code>):</strong> wait for a SYN to the listening port on any address, remember who sent it, and reply from the address the SYN was sent to with a SYN-ACK (MSS 1460). The SYN-ACK is resent every 1 second, and at once if the client's SYN repeats.</li>
+<li><strong>Finish:</strong> the client acknowledges the SYN-ACK. Both sides then set <code>mss</code> to the smaller of 1460 and the peer's MSS (536 if the peer sent none) and start with <code>cwnd</code> at 10 segments.</li>
+</ol>
+<h3>Sending data</h3>
+<ul>
+<li><code>send</code> stores the data and loops until everything is acknowledged, so it returns only when <code>snd_una</code> reaches the end.</li>
+<li><code>_send_new_data</code> sends segments of up to one MSS while the data in flight stays below the smaller of <code>cwnd</code> and the peer's window. The last segment carries the PSH flag.</li>
+<li>The timer starts when data is sent and restarts on each new ACK.</li>
+<li>If nothing is acknowledged for 10 seconds, <code>send</code> raises a timeout.</li>
+</ul>
+<h3>Receiving data and reordering</h3>
+<ul>
+<li>Every accepted segment goes through <code>_handle_segment</code>: a RST aborts, an ACK goes to <code>_handle_ack</code>, and data or a FIN goes to <code>_handle_data</code>.</li>
+<li>A segment that starts at or before <code>rcv_nxt</code> is in order: any part we already have is skipped and the rest is added to the receive buffer.</li>
+<li>A segment ahead of <code>rcv_nxt</code> but inside the 65535 window is stored in <code>out_of_order</code>. When a gap fills, <code>_deliver_out_of_order</code> moves the stored segments into the buffer in order.</li>
+<li>A FIN is only counted once all data before it has arrived.</li>
+<li>Every data segment is answered with a cumulative ACK of <code>rcv_nxt</code>, including duplicates and early ones. <code>recv</code> hands the buffered bytes to HTTP, or empty bytes after the peer's FIN.</li>
+</ul>
+<h3>Loss recovery</h3>
+<ul>
+<li><strong>Timer:</strong> the timeout is measured from round-trip times (RFC 6298 method) and kept between 0.2 and 1 second. It starts at 1 second and doubles after each timeout, never above 1 second.</li>
+<li><strong>Fair timing:</strong> only one segment is timed at a time, and never a retransmitted one (Karn's rule).</li>
+<li><strong>Timeout:</strong> the oldest unacknowledged segment is resent and sending restarts from it in slow start.</li>
+<li><strong>Early resend:</strong> three duplicate ACKs (same ACK number, no data, same window, data outstanding) trigger a resend of the missing segment without waiting for the timer.</li>
+</ul>
+<h3>Congestion control</h3>
+<p>This is Reno with NewReno partial ACKs. Data in flight never exceeds the smaller of the congestion window (<code>cwnd</code>) and the peer's window. The table shows what each event does.</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Connection starts</td>
+<td>cwnd is 10 segments (10 x MSS)</td>
+</tr>
+<tr>
+<td>ACK while cwnd is below ssthresh (slow start)</td>
+<td>cwnd grows by up to one MSS per ACK</td>
+</tr>
+<tr>
+<td>ACK at or above ssthresh</td>
+<td>cwnd grows by MSS x MSS / cwnd, about one MSS per round trip</td>
+</tr>
+<tr>
+<td>3 duplicate ACKs</td>
+<td>ssthresh becomes half the data in flight (at least 2 MSS), the lost segment is resent, cwnd becomes ssthresh plus 3 MSS</td>
+</tr>
+<tr>
+<td>Partial ACK during recovery</td>
+<td>The next missing segment is resent at once</td>
+</tr>
+<tr>
+<td>ACK covering everything sent before the loss</td>
+<td>cwnd becomes ssthresh and recovery ends</td>
+</tr>
+<tr>
+<td>Timeout</td>
+<td>ssthresh becomes half the data in flight, cwnd becomes 1 MSS, the oldest segment is resent</td>
+</tr>
+</tbody>
+</table>
+<h3>Teardown</h3>
+<ul>
+<li><code>close</code> sends a FIN and resends it every timeout until it is acknowledged, while still acknowledging the peer's data and FIN.</li>
+<li>It also waits for the peer's FIN, but gives up after 2 seconds in total. TIME_WAIT is not used.</li>
+<li>A RST at any point ends the connection at once.</li>
+</ul>
+<h3>Raw packets and the log</h3>
+<ul>
+<li><strong>Sending:</strong> <code>_send_segment</code> builds the TCP header, then the IP header with the next identification number (1 to 65535, never 0), and sends the packet with <code>sendto</code> on a raw socket opened with <code>IP_HDRINCL</code>. A failed send is treated like a lost packet.</li>
+<li><strong>Receiving:</strong> <code>_receive_packet</code> reads a raw packet, checks the IP header and then the TCP header (both checksums), and drops bad ones silently. <code>_next_segment</code> keeps only packets with our connection's addresses and ports. A 4 MB receive buffer avoids drops during bursts.</li>
+<li><strong>Log:</strong> <code>_log</code> writes one line per segment sent or accepted, in the assignment's format, and flushes after every line. Sockets that use the same log path share one open file, which is how the server logs many connections into one file.</li>
+<li><strong>Kernel resets:</strong> the kernel does not know about our connection, so when our packets arrive it would answer with a RST and kill the connection. Both launchers add one <code>iptables</code> rule that drops outgoing RSTs (only once, <code>-C</code> checks first). Running other programs is allowed in the launchers. The <code>DROP tcp ... flags:0x04/0x04</code> line seen in later screenshots is this rule being printed.</li>
+</ul>
+<p><img alt="iptables rule in launchers" src="img/b_iptables.png" /></p>
+<p><em>What it shows:</em> the only place <code>iptables</code> is used is lines 4 and 5 of <code>run-client</code> and <code>run-server</code>. Our Python code never runs other programs.</p>
+<!--
+### Requirement map
+
+| Rule | Where it is met |
+| --- | --- |
+| T1, T2: own IP and TCP headers with checksums, non-zero ID | `create_ip_header`, `create_tcp_header`, ID counter in `_send_segment` |
+| T3: SYN option only MSS 1460, data up to the smaller MSS | `_send_segment(mss=...)`, `_established` |
+| T4, T5: verify checksums, use only our connection | `parse_ip_header`, `parse_tcp_header`, `_next_segment` |
+| T6, T13: random sequence number and source port | `__init__`, `connect` |
+| T7: handshake retry and time limit | `HANDSHAKE_RETRY`, `HANDSHAKE_TIMEOUT` |
+| T8, T9: RST abort, FIN teardown | `_handle_segment`, `close` |
+| T10: window limit, cumulative ACKs, retransmission, 10 second idle limit | `_send_new_data`, `_handle_ack`, `_on_timeout`, `send` |
+| T11, T12: in-order delivery, ACK every segment, keep early segments | `_handle_data`, `_deliver_out_of_order` |
+| T14: congestion control | `_handle_ack`, `_on_timeout` | -->
+
+<h3>R6: packet capture of one full connection</h3>
+<p>Our client downloads <code>small.bin</code> from our server on port 8080 while <code>tcpdump</code> records it on the client.</p>
+<p><img alt="capture command" src="img/b_capture_cmd.png" /></p>
+<p><em>What it shows:</em> <code>tcpdump</code> starts, our client downloads <code>small.bin</code> with <code>--log</code>, gets <code>200 OK</code> and exit code 0, then <code>tcpdump</code> stops.</p>
+<p><img alt="capture output" src="img/b_capture.png" /></p>
+<p><em>What it shows:</em> <code>tcpdump -nn -S -r ~/conn.pcap</code>. The first 21 lines are one complete connection (the same 21 lines then repeat, because two old <code>tcpdump</code> jobs were writing to the same file; this is a capture mistake, not extra packets):</p>
+<ul>
+<li><strong>Handshake:</strong> <code>[S]</code> with <code>mss 1460</code> from random port 65520, <code>[S.]</code> with <code>mss 1460</code> back, then <code>[.]</code>. Both sides advertise window 65535 and send only the MSS option.</li>
+<li><strong>Request:</strong> one <code>[P.]</code> segment of 69 bytes with <code>GET /small.bin HTTP/1.1</code>.</li>
+<li><strong>Data:</strong> six data segments from the server (five of 1460 bytes and the last of 800 with PSH). The first starts with <code>HTTP/1.1 200 OK</code>. The client sends a cumulative ACK for every one.</li>
+<li><strong>Teardown:</strong> the client sends <code>[F.]</code>, the server answers with its own <code>[F.]</code>, and each side ACKs the other's FIN.</li>
+<li><strong>Two paths:</strong> packets the client sends leave on <code>enp0s8</code> (LAN A, through r1). Packets it receives come in on <code>enp0s9</code> (Link D). This is the asymmetric routing from Part A.</li>
+</ul>
+<p><img alt="our packet log" src="img/b_client_log.png" /></p>
+<p><em>What it shows:</em> <code>cat ~/client_small.log</code>, our own log of the same connection (same port 65520 and the same sequence numbers as the capture). Each line has the assignment's format.</p>
+<ul>
+<li><strong>Flags:</strong> SYN <code>0x02</code>, SYN-ACK <code>0x12</code>, ACK <code>0x10</code>, request and last data segment <code>0x18</code> (PSH+ACK), FIN <code>0x11</code>.</li>
+<li><strong>IP ID:</strong> our IDs are non-zero and go up by one per packet (35583, 35584, ...).</li>
+<li><strong>TTL:</strong> we send with 64. Packets from the server arrive with 63, because one router (r2) is on the way back over Link D.</li>
+<li><strong>Cumulative ACKs:</strong> after each data segment, our ACK number moves forward by 1460 (317589722, 317591182, ...).</li>
+</ul>
+<p>The right end of each line (<code>win</code>, <code>len</code>, <code>mss</code>) is cut off by the window width.</p>
+<h3>Retransmission under loss</h3>
+<p>We made r2 drop 5% of the packets it sends to the client over Link D, then downloaded <code>big.bin</code> from our server.</p>
+<p><img alt="loss test" src="img/b_loss.png" /></p>
+<p><em>What it shows:</em> with <code>netem loss 5%</code> on r2, the download still ends with <code>200 OK</code>, exit code 0, and the same md5sum as the original (<code>51e129c3...</code>). Our log shows the client sent the same ACK number more than once 7 times. These are the duplicate ACKs that tell the server a segment was lost, so it resends it.</p>
+<h3>Out-of-order buffering</h3>
+<p>We made r2 delay packets by 10 ms and send 25% of them early (out of order), then downloaded <code>big.bin</code> again.</p>
+<p><img alt="reorder test" src="img/b_reorder.png" /></p>
+<p><em>What it shows:</em> with <code>netem delay 10ms reorder 25% 50%</code>, 68 data segments arrived with a lower sequence number than the one before them, so they were out of order. The file still has the correct md5sum and exit code 0, so early segments were kept and put back in order.</p>
+<h3>Fairness with standard TCP</h3>
+<p>We made a 50 MB file <code>huge.bin</code> on the server and served it twice: from our server (port 8080) and from <code>python3 -m http.server</code> (port 8000). On r2, we limited Link D to 10 Mbit/s. All data to the client goes over Link D, so this is the shared bottleneck.</p>
+<p><img alt="50 MB test file" src="img/b_fair_file.png" /></p>
+<p><em>What it shows:</em> on the server VM, we make the 50 MB test file from random bytes.</p>
+<p><img alt="bottleneck on r2" src="img/b_fair_tbf.png" /></p>
+<p><em>What it shows:</em> r2's Link D (enp0s10) is limited to 10 Mbit/s with a token bucket filter (<code>tbf</code>).</p>
+<p><img alt="each download alone" src="img/b_fair_alone.png" /></p>
+<p><em>What it shows:</em> first, each download runs alone. curl takes 41.8 s and our client takes 41.7 s. Both reach about 9.6 Mbit/s (50 MB in about 42 s), so each one alone fills the link.</p>
+<p><img alt="both downloads together" src="img/b_fair_together.png" /></p>
+<p><em>What it shows:</em> then both downloads start at the same moment. Our client finishes in 74.4 s and curl in 83.4 s. Both get <code>200 OK</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Run</th>
+<th>Our client</th>
+<th>curl</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Alone</td>
+<td>41.7 s</td>
+<td>41.8 s</td>
+</tr>
+<tr>
+<td>Together</td>
+<td>74.4 s</td>
+<td>83.4 s</td>
+</tr>
+</tbody>
+</table>
+<p><strong>What this means:</strong></p>
+<ul>
+<li>If the link were split exactly in half, both would take about 83 s (twice the time alone).</li>
+<li>Until our client finished at 74.4 s, the link carried about 89 MB in total: 50 MB for our client and about 39 MB for curl. So our client got about <strong>56%</strong> of the link and curl about <strong>44%</strong>.</li>
+<li>curl then had the link to itself and finished its last 11 MB in about 9 s.</li>
+<li>So the two connections share the link roughly equally. Ours takes a little more, but neither one starves the other. Our cwnd grows when there is room and is halved when packets are dropped at the bottleneck, just like curl's kernel TCP.</li>
+</ul>
+<p>Notes on this test:</p>
+<ul>
+<li>We tested one connection of each kind. We did not test several of each at the same time.</li>
+<li>In the server pane, <code>pgrep</code> lists our server twice. An older copy from the silent-client test was still running. Both downloads still completed with <code>200 OK</code>.</li>
+<li>After the test we removed the limit (<code>sudo tc qdisc del dev enp0s10 root</code>).</li>
+</ul>
+<h2>Code files</h2>
+<p>Each file belongs to one part; the HTTP files (Parts C and D) sit on the TCP and IP files (Part B).</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Part</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>netcfg/*.sh</code></td>
+<td>A</td>
+<td>One script per VM: brings up interfaces, sets addresses, routes, forwarding and rp_filter</td>
+</tr>
+<tr>
+<td><code>ip_header.py</code></td>
+<td>B</td>
+<td>Builds and checks IPv4 headers and checksums</td>
+</tr>
+<tr>
+<td><code>tcp.py</code></td>
+<td>B</td>
+<td>Builds and checks TCP headers and checksums</td>
+</tr>
+<tr>
+<td><code>custom_socket.py</code></td>
+<td>B</td>
+<td>Our TCP: handshake, reliable send, receive, teardown, packet log</td>
+</tr>
+<tr>
+<td><code>custom_http.py</code></td>
+<td>C and D</td>
+<td>URL parsing, request and response building, response reading, and the server's accept loop</td>
+</tr>
+<tr>
+<td><code>client.py</code></td>
+<td>C</td>
+<td>Reads the command line, builds the request, calls the connection, writes the body, sets the exit code</td>
+</tr>
+<tr>
+<td><code>server.py</code></td>
+<td>D</td>
+<td>Reads the command line, picks the file to send, chooses the status code and Content-Type</td>
+</tr>
+<tr>
+<td><code>client/run-client</code>, <code>server/run-server</code></td>
+<td>C, D</td>
+<td>Add the RST-drop rule, then <code>exec</code> the Python program with all arguments</td>
+</tr>
+</tbody>
+</table>
+<h2>How the files stack up</h2>
+<pre><code> client.py                    server.py (handler)
+     |                              |
+     v                              v
+ ------------- custom_http.py (HTTP) -------------
+     |      HTTPRequest / HTTPResponse objects
+     v
+ ----------- custom_socket.py (our TCP) ----------
+     |      plain bytes: connect, accept, send, recv, close
+     v
+ ---------- tcp.py + ip_header.py (headers) -------
+     |      raw IPv4 packets (IP_HDRINCL)
+     v
+                    network
+</code></pre>
+<p>Programs pass request and reply objects to the HTTP layer, the HTTP layer passes plain bytes to our TCP socket, and the socket passes IPv4 packets to the network. Nothing skips a layer, so each one can be explained without the others.</p>
+<h2>Classes and what each one does</h2>
+<p>Each class has one job and is kept unaware of the layers around it. The rows go from the top layer down to the bottom.</p>
+<table>
+<thead>
+<tr>
+<th>Class or piece</th>
+<th>File</th>
+<th>Its one job</th>
+<th>What it deliberately does not know</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>client.py</code> (a script, no class)</td>
+<td><code>client.py</code></td>
+<td>Reads the command line, builds the request, calls the connection, writes the body, sets the exit code</td>
+<td>How bytes are sent or parsed, anything about TCP</td>
+</tr>
+<tr>
+<td><code>handler</code></td>
+<td><code>server.py</code></td>
+<td>The website logic: turns a request into a file and a status (200, 403, 404, 501) with the right <code>Content-Type</code></td>
+<td>Sockets, bytes on the wire, or how the request was read</td>
+</tr>
+<tr>
+<td><code>HTTPRequest</code> (data class)</td>
+<td><code>custom_http.py</code></td>
+<td>Holds one request: method, url, headers, body</td>
+<td>How it is turned into bytes</td>
+</tr>
+<tr>
+<td><code>HTTPResponse</code> (data class)</td>
+<td><code>custom_http.py</code></td>
+<td>Holds one reply: status code, headers, body, reason</td>
+<td>How it is turned into bytes</td>
+</tr>
+<tr>
+<td><code>CustomHTTP.ClientConnection</code></td>
+<td><code>custom_http.py</code></td>
+<td>Runs one client exchange: connect, send the request, read until the reply is whole, parse it, close</td>
+<td>Files, command-line options, exit codes, TCP details like ACKs</td>
+</tr>
+<tr>
+<td><code>CustomHTTP.Server</code></td>
+<td><code>custom_http.py</code></td>
+<td>The accept loop: one fresh socket per connection, read the request head, parse it, pass it to the handler, send the reply</td>
+<td>Which files exist or why a status was chosen; it only calls <code>handler.execute_get</code></td>
+</tr>
+<tr>
+<td><code>CustomHTTP</code></td>
+<td><code>custom_http.py</code></td>
+<td>An empty outer class, used only as a name that groups the client and server classes</td>
+<td>Nothing: it has no state</td>
+</tr>
+<tr>
+<td><code>process_url</code>, <code>_split_head</code>, <code>_decode_chunked</code></td>
+<td><code>custom_http.py</code></td>
+<td>Plain functions shared by both sides: split a URL, split a head, decode chunks</td>
+<td>Nothing: they keep no state between calls</td>
+</tr>
+<tr>
+<td><code>CustomTCPSocket</code></td>
+<td><code>custom_socket.py</code></td>
+<td>A reliable byte stream with <code>connect</code>, <code>accept</code>, <code>send</code>, <code>recv</code>, <code>close</code></td>
+<td>HTTP: it never looks at what the bytes mean</td>
+</tr>
+</tbody>
+</table>
+<h2>Design choices and why they help</h2>
+<p>The split keeps every piece small enough to explain, test and change on its own.</p>
+<ul>
+<li><strong>Messages are plain data:</strong> <code>HTTPRequest</code> and <code>HTTPResponse</code> have no behaviour, and both sides use the same two types.</li>
+<li><strong>The handler can be swapped:</strong> <code>Server</code> only needs <code>execute_get(request, time_budget)</code>, so file logic lives in <code>server.py</code> and can be tested with no network.</li>
+<li><strong>Two kinds of errors, two places:</strong> <code>parse_request</code> answers malformed requests (400) itself; the handler only deals with files (501, 403, 404, 200).</li>
+<li><strong>Byte work is in paired functions:</strong> <code>convert_request_to_bytes</code> with <code>parse_response</code>, and <code>parse_request</code> with <code>convert_response_to_bytes</code>, sharing <code>process_url</code> and <code>_split_head</code>.</li>
+<li><strong>HTTP uses TCP through five calls:</strong> <code>connect</code>, <code>accept</code>, <code>send</code>, <code>recv</code>, <code>close</code>. It has no retransmission or ordering code.</li>
+<li><strong>One socket per connection:</strong> all TCP state lives inside the socket object, so nothing is left over from the last client.</li>
+<li><strong>Errors go up as exceptions:</strong> <code>client.py</code> turns any of them into exit code 2; the server loop ignores them and keeps running.</li>
+</ul>
+<h2>Part C: the HTTP client</h2>
+<p>The client makes exactly one GET request per run, in these steps:</p>
+<ol>
+<li><strong>Read the arguments</strong> (URL, <code>-o</code>, <code>-l</code>) and split the URL with <code>process_url</code>. Only <code>http://</code> URLs are accepted.</li>
+<li><strong>Build one GET request.</strong> The target is the path plus query exactly as typed. The headers are <code>Host</code> (as written in the URL) and <code>Connection: close</code>, nothing else.</li>
+<li><strong>Connect and send.</strong> <code>send_request</code> finds the IP, opens our TCP connection (port 80 by default) and sends the request.</li>
+<li><strong>Read the reply</strong> until <code>_complete</code> says it is whole (by <code>Content-Length</code>, by chunks, or when the server closes). Each read waits at most 10 seconds.</li>
+<li><strong>Parse the reply.</strong> <code>parse_response</code> reads the status line and headers, then takes the body by chunks, by length, or until close.</li>
+<li><strong>Close and output.</strong> The connection is closed in a <code>finally</code> block. The body goes to the file or stdout, and the status line goes to stderr.</li>
+</ol>
+<p><strong>Exit codes:</strong> 0 for a 2xx reply; 1 for any other complete reply (body still saved, redirects not followed); 2 for anything else (bad URL, DNS failure, refused, timeout, reset, incomplete body).</p>
+<h2>Part D: the HTTP server</h2>
+<p>The server runs forever and serves one connection at a time, in these steps:</p>
+<ol>
+<li><strong>Start up.</strong> Read <code>-p</code> (default 8080), <code>-d</code> (default <code>./www</code>) and the log option. Exit with code 1 if DOCROOT is not a folder.</li>
+<li><strong>Accept one connection at a time.</strong> Each connection gets a fresh TCP socket. <code>accept</code> waits for a SYN on any address and replies from the address the SYN was sent to.</li>
+<li><strong>Read the request head</strong> up to the blank line, within 10 seconds in total. On a timeout or an early close, the connection is closed with no reply.</li>
+<li><strong>Check the request line.</strong> <code>parse_request</code> answers a bad request line, or a target that does not start with <code>/</code>, with 400 straight away.</li>
+<li><strong>Choose the reply.</strong> <code>execute_get</code> picks the status, file and headers (table below).</li>
+<li><strong>Send and close.</strong> <code>convert_response_to_bytes</code> builds the reply, our TCP sends it and closes. Any error on one client is ignored, so the server never exits because of a bad client.</li>
+</ol>
+<h2>Part D: response rules</h2>
+<p>The server checks these conditions in order and stops at the first one that matches.</p>
+<table>
+<thead>
+<tr>
+<th>Order</th>
+<th>Condition</th>
+<th>Status</th>
+<th>Where in the code</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Request line is not <code>METHOD SP TARGET SP HTTP/x.y</code>, or target does not start with <code>/</code></td>
+<td>400 Bad Request</td>
+<td><code>parse_request</code> in <code>custom_http.py</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>Method is not GET or HEAD</td>
+<td>501 Not Implemented</td>
+<td><code>execute_get</code> in <code>server.py</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>A path segment is <code>..</code></td>
+<td>403 Forbidden</td>
+<td><code>execute_get</code>: <code>".." in path.split("/")</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>The file does not exist</td>
+<td>404 Not Found</td>
+<td><code>execute_get</code>: <code>os.path.isfile</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>Otherwise</td>
+<td>200 OK</td>
+<td><code>execute_get</code>: file is read and sent</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>File mapping:</strong> the query string is ignored, the path is added to DOCROOT, and a path ending in <code>/</code> (or naming a folder) maps to <code>index.html</code> there. No percent-decoding is done.</li>
+<li><strong>Headers:</strong> every reply is <code>HTTP/1.1</code> with <code>Content-Type</code> (from the file extension, <code>application/octet-stream</code> if unknown), <code>Content-Length</code> and <code>Connection: close</code>. A HEAD reply has the same headers and no body.</li>
+<li><strong>Extra case:</strong> a file that exists but cannot be read also gets 403.</li>
+</ul>
+<h2>Testing</h2>
+<p>All commands run on the client VM (<code>10.10.1.10</code>) against the server VM (<code>10.10.3.10</code>).</p>
+<h3>R4: our client against a standard web server (Part C)</h3>
+<p>On the server VM, <code>python3 -m http.server 8000</code> serves <code>~/www</code>, which holds <code>index.html</code> and a binary file <code>big.bin</code>.</p>
+<p><img alt="big.bin size and md5" src="img/c_bigbin_size.png" /></p>
+<p><em>What it shows:</em> on the server VM, <code>big.bin</code> is 300,000 bytes (more than 100 KB). Its original md5sum is <code>51e129c3eee50493308657d3b6888eaa</code>.</p>
+<p><img alt="our client downloads" src="img/c_ours.png" /></p>
+<p><em>What it shows:</em> our client downloads <code>index.html</code> and <code>big.bin</code>. Both print <code>HTTP/1.1 200 OK</code> and exit with code 0. Their md5sums are <code>3ed2f77a...</code> (HTML) and <code>51e129c3...</code> (binary).</p>
+<p><img alt="curl downloads and server log" src="img/c_curl.png" /></p>
+<p><em>What it shows:</em> curl downloads the same two URLs. Each curl md5sum is printed next to ours and they are equal. The server window shows the <code>GET</code> requests coming from <code>10.10.1.10</code> with status 200.</p>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HTML page matches curl</td>
+<td><code>200 OK</code>, exit 0, md5 <code>3ed2f77acf431b85499b5b7845d3faee</code> for both</td>
+</tr>
+<tr>
+<td>Binary file matches curl</td>
+<td><code>200 OK</code>, exit 0, md5 <code>51e129c3eee50493308657d3b6888eaa</code> for both</td>
+</tr>
+</tbody>
+</table>
+<h3>Client error cases</h3>
+<p><img alt="client errors" src="img/c_errors.png" /></p>
+<p><em>What it shows:</em> four error cases and their exit codes.</p>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Command</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Missing file</td>
+<td><code>run-client http://10.10.3.10:8000/nope -o /tmp/x</code></td>
+<td><code>HTTP/1.1 404 File not found</code>, exit 1 (body still saved)</td>
+</tr>
+<tr>
+<td>Not an http URL</td>
+<td><code>run-client ftp://10.10.3.10/</code></td>
+<td><code>Error: URL must start with http://</code>, exit 2</td>
+</tr>
+<tr>
+<td>Unknown host</td>
+<td><code>run-client http://no-such-host.invalid/</code></td>
+<td><code>Error: Name or service not known</code>, exit 2</td>
+</tr>
+<tr>
+<td>Port with no server</td>
+<td><code>run-client http://10.10.3.10:9/</code></td>
+<td><code>Error: connection timed out</code>, exit 2</td>
+</tr>
+</tbody>
+</table>
+<p>For the last test we expected "connection refused". It times out instead because the server VM still had the RST-drop rule from an earlier run of <code>run-server</code>, so the server's kernel could not send its RST. The exit code is still 2, as the assignment asks.</p>
+<h3>R5: our server against standard clients (Part D)</h3>
+<p>On the server VM, <code>sudo ./server/run-server -p 8080 -d ~/www</code> serves the same <code>index.html</code> and <code>big.bin</code>.</p>
+<p><img alt="curl, wget and our client" src="img/d_downloads.png" /></p>
+<p><em>What it shows:</em></p>
+<ul>
+<li><code>curl -i http://10.10.3.10:8080/</code> returns <code>200 OK</code> with <code>Content-Type: text/html</code>, <code>Content-Length: 41</code>, <code>Connection: close</code> and the content of <code>index.html</code>. So a folder path maps to <code>index.html</code>.</li>
+<li>curl, wget and our client all download <code>big.bin</code> from our server, and all three md5sums are <code>51e129c3eee50493308657d3b6888eaa</code>. This is the md5sum of the original file on the server (shown in R4), so all three match the original.</li>
+</ul>
+<p><img alt="HEAD and errors" src="img/d_head_errors.png" /></p>
+<p><em>What it shows:</em> the response rules, one per command.</p>
+<table>
+<thead>
+<tr>
+<th>Request</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>curl -I /index.html</code> (HEAD)</td>
+<td><code>200 OK</code>, same headers as GET (<code>Content-Length: 41</code>), no body</td>
+</tr>
+<tr>
+<td><code>curl -i /missing.txt</code></td>
+<td><code>404 Not Found</code> with a small HTML body</td>
+</tr>
+<tr>
+<td><code>curl -i --path-as-is /../e...</code></td>
+<td><code>403 Forbidden</code> (a path segment is <code>..</code>)</td>
+</tr>
+<tr>
+<td><code>curl -i -X POST /</code></td>
+<td><code>501 Not Implemented</code></td>
+</tr>
+<tr>
+<td><code>printf 'GET noslash HTTP/1.1\r\n\r\n' \| nc ...</code></td>
+<td><code>400 Bad Request</code> (target does not start with <code>/</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Every error reply is <code>HTTP/1.1</code> and has <code>Content-Type</code>, <code>Content-Length</code> and <code>Connection: close</code>.</p>
+<h3>Silent client</h3>
+<p><img alt="server running" src="img/d_silent_server.png" /></p>
+<p><em>What it shows:</em> on the server VM, our server is running on port 8080 with <code>~/www</code> as DOCROOT.</p>
+<p><img alt="silent client" src="img/d_silent.png" /></p>
+<p><em>What it shows:</em> on the client VM, <code>nc -d</code> connects and sends nothing (<code>-d</code> stops nc from reading the keyboard, so it exits as soon as the server closes the connection). nc exits after <code>10.023</code> seconds. So the server waited 10 seconds for a request head, then closed the connection without sending a reply. Afterwards the server keeps running. (The <code>Stopped</code> line is the background <code>tcpdump</code> job being paused by the shell; it does not affect the test.)</p>
+<h2>Limitations</h2>
+<p>Most items below are outside the assignment's scope, but the request-line check in the server is slightly looser than the spec.</p>
+<ul>
+<li><strong>Looser request-line check:</strong> only <code>HTTP/</code> is checked, so <code>HTTP/abc</code> is accepted instead of getting a 400.</li>
+<li><strong>One client at a time:</strong> others wait. A SYN that arrives between two connections can be missed, and the client's 1-second SYN retry covers it.</li>
+<li><strong>Server memory and names:</strong> the whole file is read into memory, and <code>%20</code> in a file name is not decoded.</li>
+<li><strong>Client scope:</strong> HTTP only, no redirects, no keep-alive, one request per run. It keeps the whole reply in memory and re-checks it after every read, so very large downloads are slow.</li>
+<li><strong>Option name:</strong> <code>server.py</code> defines <code>--logfile</code>; <code>--log</code> works because <code>argparse</code> accepts any unique prefix.</li>
+<li><strong>RST rule stays:</strong> the RST-drop rule added by the launchers stays until reboot. While it is there, the machine's kernel cannot refuse connections with a RST, so a closed port looks like a timeout (as in the client error test).</li>
+</ul></body></html>
