@@ -341,21 +341,7 @@ Each file belongs to one part; the HTTP files (Parts C and D) sit on the TCP and
 
 ## How the files stack up
 
-```
- client.py                    server.py (handler)
-     |                              |
-     v                              v
- ------------- custom_http.py (HTTP) -------------
-     |      HTTPRequest / HTTPResponse objects
-     v
- ----------- custom_socket.py (our TCP) ----------
-     |      plain bytes: connect, accept, send, recv, close
-     v
- ---------- tcp.py + ip_header.py (headers) -------
-     |      raw IPv4 packets (IP_HDRINCL)
-     v
-                    network
-```
+![alt text](<Screenshot 2026-10-12 at 7.34.00 PM.png>)
 
 Programs pass request and reply objects to the HTTP layer, the HTTP layer passes plain bytes to our TCP socket, and the socket passes IPv4 packets to the network. Nothing skips a layer, so each one can be explained without the others.
 

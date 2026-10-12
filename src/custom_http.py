@@ -144,7 +144,7 @@ class CustomHTTP:
                 # request sent, now the response
                 res, st = bytearray(), {}
                 while not self._complete(res, st):
-                    chunk=self.socket.recv(10)        # TimeoutError / ConnectionError -> exit 2
+                    chunk=self.socket.recv(4096)        # TimeoutError / ConnectionError -> exit 2
                     if chunk==b"":                  # peer FIN
                         break
                     res+=chunk

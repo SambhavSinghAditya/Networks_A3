@@ -44,10 +44,16 @@ Client→server goes via r1 and r2; server→client returns via r2 and Link D.
    sudo ./netcfg/server.sh IF_C
    ```
    Each script runs once on a freshly booted machine.
-5. Check connectivity, for example `ping 10.10.3.10` from the client and `traceroute -n 10.10.3.10`.
+5. On every VM (client, r1, r2, server), as root, drop the kernel's own RSTs. The launchers add this rule only on the VM they run on, so add it by hand everywhere before testing with `curl`, `wget` or `python3 -m http.server`:
+   ```sh
+   sudo iptables -C OUTPUT -p tcp --tcp-flags RST RST -j DROP 2>/dev/null || \
+       sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
+   ```
+   (`-C` checks first, so running it twice does not add a duplicate. The rule is lost on reboot.)
+6. Check connectivity, for example `ping 10.10.3.10` from the client and `traceroute -n 10.10.3.10`.
 
 ## Running
-Both launchers add an iptables rule that drops the kernel's own RSTs (the kernel doesn't know about our raw-socket TCP), then start the Python program. Run them as root.
+Both launchers add the iptables rule from Setup step 5 if it is missing (the kernel doesn't know about our raw-socket TCP and would reset our connections), then start the Python program. Run them as root.
 
 **Server** (on the server VM):
 ```sh
@@ -75,7 +81,22 @@ md5sum out.html www/index.html   # must match
 curl -s http://10.10.3.10:8080/ | md5sum   # compare against the standard client
 ```
 
-The server also works with `curl` and `wget`. The client works against a standard server such as `python3 -m http.server` on the server VM.
+### Testing with curl, wget and a standard server
+Do Setup step 5 on every VM first. Then, with our server running on the server VM, from the client VM:
+```sh
+curl -v  http://10.10.3.10:8080/                    # body + headers
+curl -sI http://10.10.3.10:8080/                    # HEAD request
+curl -s  -o out.html http://10.10.3.10:8080/index.html
+wget -O out.html http://10.10.3.10:8080/index.html
+curl -s -o /dev/null -w "%{http_code}\n" http://10.10.3.10:8080/missing   # expect 404
+```
+With a standard server on the server VM, run our client against it:
+```sh
+# server VM
+python3 -m http.server 8000 --bind 0.0.0.0
+# client VM
+sudo ./client/run-client http://10.10.3.10:8000/ -o out.html --log client.log
+```
 
 ## Packet log
 With `--log FILE`, each sent or accepted TCP segment is written as one line:
