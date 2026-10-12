@@ -84,27 +84,50 @@ class CustomHTTP:
             self.socket=custom_socket.CustomTCPSocket(logfile)
 
         @staticmethod
-        def _complete(data: bytes) -> bool:
-            """True once Content-Length / chunked framing says the response is whole."""
-            try:
-                _, headers, body = _split_head(data)
-                status = int(data.split(b" ", 2)[1])
-            except (ValueError, IndexError):
-                return False
-            if status in (204, 304) or 100 <= status < 200:
+        def _complete(data: bytearray, st: dict) -> bool:
+            """True once Content-Length / chunked framing says the response is whole.
+            st keeps parse progress between calls so every byte is scanned once."""
+            if "mode" not in st:
+                idx = data.find(b"\r\n\r\n", st.get("scan", 0))
+                st["scan"] = max(0, len(data) - 3)
+                if idx == -1:
+                    return False
+                try:
+                    head = bytes(data[:idx + 4])
+                    headers = _split_head(head)[1]
+                    status = int(head.split(b" ", 2)[1])
+                except (ValueError, IndexError):
+                    return False
+                st["end"] = st["pos"] = idx + 4
+                if status in (204, 304) or 100 <= status < 200:
+                    st["mode"] = "none"
+                elif "chunked" in headers.get("transfer-encoding", "").lower():
+                    st["mode"] = "chunked"
+                else:
+                    try:
+                        st["n"], st["mode"] = int(headers["content-length"]), "len"
+                    except (KeyError, ValueError):
+                        st["mode"] = "close"        # read-until-close
+            if st["mode"] == "none":
                 return True
-            if "chunked" in headers.get("transfer-encoding", "").lower():
+            if st["mode"] == "len":
+                return len(data) - st["end"] >= st["n"]
+            if st["mode"] == "close":
+                return False
+            while True:                             # chunked: resume at first unfinished chunk
+                pos = st["pos"]
+                eol = data.find(b"\r\n", pos)
+                if eol == -1:
+                    return False
                 try:
-                    _decode_chunked(body)
-                    return True
+                    size = int(data[pos:eol].split(b";", 1)[0].strip(), 16)
                 except ValueError:
                     return False
-            if "content-length" in headers:
-                try:
-                    return len(body) >= int(headers["content-length"])
-                except ValueError:
+                if size == 0:                       # trailers ignored, but must be terminated
+                    return data.find(b"\r\n\r\n", eol) != -1
+                if len(data) < eol + size + 4:
                     return False
-            return False        # read-until-close
+                st["pos"] = eol + size + 4
 
         def send_request(self, request: HTTPRequest)-> HTTPResponse: 
             reciever_ip, reciever_port, _, _ = process_url(request.url)
@@ -115,13 +138,13 @@ class CustomHTTP:
                 while req:
                     req=req[self.socket.send(req):]
                 # request sent, now the response
-                res=b""
-                while not self._complete(res):
-                    chunk=self.socket.recv(10)      # TimeoutError / ConnectionError -> exit 2
+                res, st = bytearray(), {}
+                while not self._complete(res, st):
+                    chunk=self.socket.recv(4096)      # TimeoutError / ConnectionError -> exit 2
                     if chunk==b"":                  # peer FIN
                         break
                     res+=chunk
-                return self.parse_response(res)
+                return self.parse_response(bytes(res))
             finally:
                 self.socket.close()
 

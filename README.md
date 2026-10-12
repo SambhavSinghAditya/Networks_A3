@@ -1,8 +1,8 @@
 # COL334 Assignment 3 — TCP and HTTP over Raw Sockets
 
 ## Team
-- `<Name 1>` — `<ENTRY_NUMBER_1>`
-- `<Name 2>` — `<ENTRY_NUMBER_2>`
+- Sambhav Singh Aditya — 2024CS10177
+- Utkarsh Agrawal — 2024CS10076
 
 ## What this assignment does
 We build a small four-machine network by hand and run our own HTTP client and server on it, over our own TCP.
