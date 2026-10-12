@@ -341,7 +341,7 @@ Each file belongs to one part; the HTTP files (Parts C and D) sit on the TCP and
 
 ## How the files stack up
 
-![alt text](<Screenshot 2026-10-12 at 7.34.00 PM.png>)
+![the four layers and what passes between them](img/layers.png)
 
 Programs pass request and reply objects to the HTTP layer, the HTTP layer passes plain bytes to our TCP socket, and the socket passes IPv4 packets to the network. Nothing skips a layer, so each one can be explained without the others.
 
@@ -487,13 +487,3 @@ Every error reply is `HTTP/1.1` and has `Content-Type`, `Content-Length` and `Co
 
 *What it shows:* on the client VM, `nc -d` connects and sends nothing (`-d` stops nc from reading the keyboard, so it exits as soon as the server closes the connection). nc exits after `10.023` seconds. So the server waited 10 seconds for a request head, then closed the connection without sending a reply. Afterwards the server keeps running. (The `Stopped` line is the background `tcpdump` job being paused by the shell; it does not affect the test.)
 
-## Limitations
-
-Most items below are outside the assignment's scope, but the request-line check in the server is slightly looser than the spec.
-
-- **Looser request-line check:** only `HTTP/` is checked, so `HTTP/abc` is accepted instead of getting a 400.
-- **One client at a time:** others wait. A SYN that arrives between two connections can be missed, and the client's 1-second SYN retry covers it.
-- **Server memory and names:** the whole file is read into memory, and `%20` in a file name is not decoded.
-- **Client scope:** HTTP only, no redirects, no keep-alive, one request per run. It keeps the whole reply in memory and re-checks it after every read, so very large downloads are slow.
-- **Option name:** `server.py` defines `--logfile`; `--log` works because `argparse` accepts any unique prefix.
-- **RST rule stays:** the RST-drop rule added by the launchers stays until reboot. While it is there, the machine's kernel cannot refuse connections with a RST, so a closed port looks like a timeout (as in the client error test).

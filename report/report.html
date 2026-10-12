@@ -14,7 +14,7 @@ pre code { background: none; }
 img { display: block; max-width: 100%; max-height: 120mm; margin: 8px auto 2px; border: 1px solid #ccc; page-break-inside: avoid; }
 p:has(img) { page-break-inside: avoid; }
 blockquote { border-left: 3px solid #999; margin-left: 0; padding-left: 10px; color: #333; }
-</style></head><body><h1>Assignment 3 Report: Parts A to D</h1>
+</style></head><body><h1>Assignment 3 Report</h1>
 <p>This report covers the network setup (Part A), our TCP over raw sockets (Part B), the HTTP client (Part C) and the HTTP server (Part D). Every screenshot was taken on our four Ubuntu 22.04 VMs (UTM on an Apple Silicon Mac) and shows the command that produced it.</p>
 <h2>Overview</h2>
 <p>The four parts build one small system from the bottom up: a network, a TCP stack, and a web client and server on top.</p>
@@ -514,20 +514,7 @@ blockquote { border-left: 3px solid #999; margin-left: 0; padding-left: 10px; co
 </tbody>
 </table>
 <h2>How the files stack up</h2>
-<pre><code> client.py                    server.py (handler)
-     |                              |
-     v                              v
- ------------- custom_http.py (HTTP) -------------
-     |      HTTPRequest / HTTPResponse objects
-     v
- ----------- custom_socket.py (our TCP) ----------
-     |      plain bytes: connect, accept, send, recv, close
-     v
- ---------- tcp.py + ip_header.py (headers) -------
-     |      raw IPv4 packets (IP_HDRINCL)
-     v
-                    network
-</code></pre>
+<p><img alt="the four layers and what passes between them" src="img/layers.png" /></p>
 <p>Programs pass request and reply objects to the HTTP layer, the HTTP layer passes plain bytes to our TCP socket, and the socket passes IPv4 packets to the network. Nothing skips a layer, so each one can be explained without the others.</p>
 <h2>Classes and what each one does</h2>
 <p>Each class has one job and is kept unaware of the layers around it. The rows go from the top layer down to the bottom.</p>
@@ -786,14 +773,4 @@ blockquote { border-left: 3px solid #999; margin-left: 0; padding-left: 10px; co
 <p><img alt="server running" src="img/d_silent_server.png" /></p>
 <p><em>What it shows:</em> on the server VM, our server is running on port 8080 with <code>~/www</code> as DOCROOT.</p>
 <p><img alt="silent client" src="img/d_silent.png" /></p>
-<p><em>What it shows:</em> on the client VM, <code>nc -d</code> connects and sends nothing (<code>-d</code> stops nc from reading the keyboard, so it exits as soon as the server closes the connection). nc exits after <code>10.023</code> seconds. So the server waited 10 seconds for a request head, then closed the connection without sending a reply. Afterwards the server keeps running. (The <code>Stopped</code> line is the background <code>tcpdump</code> job being paused by the shell; it does not affect the test.)</p>
-<h2>Limitations</h2>
-<p>Most items below are outside the assignment's scope, but the request-line check in the server is slightly looser than the spec.</p>
-<ul>
-<li><strong>Looser request-line check:</strong> only <code>HTTP/</code> is checked, so <code>HTTP/abc</code> is accepted instead of getting a 400.</li>
-<li><strong>One client at a time:</strong> others wait. A SYN that arrives between two connections can be missed, and the client's 1-second SYN retry covers it.</li>
-<li><strong>Server memory and names:</strong> the whole file is read into memory, and <code>%20</code> in a file name is not decoded.</li>
-<li><strong>Client scope:</strong> HTTP only, no redirects, no keep-alive, one request per run. It keeps the whole reply in memory and re-checks it after every read, so very large downloads are slow.</li>
-<li><strong>Option name:</strong> <code>server.py</code> defines <code>--logfile</code>; <code>--log</code> works because <code>argparse</code> accepts any unique prefix.</li>
-<li><strong>RST rule stays:</strong> the RST-drop rule added by the launchers stays until reboot. While it is there, the machine's kernel cannot refuse connections with a RST, so a closed port looks like a timeout (as in the client error test).</li>
-</ul></body></html>
+<p><em>What it shows:</em> on the client VM, <code>nc -d</code> connects and sends nothing (<code>-d</code> stops nc from reading the keyboard, so it exits as soon as the server closes the connection). nc exits after <code>10.023</code> seconds. So the server waited 10 seconds for a request head, then closed the connection without sending a reply. Afterwards the server keeps running. (The <code>Stopped</code> line is the background <code>tcpdump</code> job being paused by the shell; it does not affect the test.)</p></body></html>
